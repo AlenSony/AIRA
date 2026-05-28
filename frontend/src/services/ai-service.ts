@@ -18,21 +18,29 @@ export interface ChatMessage {
   mood?: MoodAnalysis;
 }
 
-interface GeminiResponse {
-  candidates: Array<{
-    content: {
-      parts: Array<{
-        text: string;
-      }>;
-    };
-  }>;
+// In dev, default to same-origin + Vite proxy (/api → :8000). Override with VITE_API_BASE_URL if needed.
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ??
+  (import.meta.env.DEV ? '' : 'http://localhost:8000');
+
+interface BackendChatResponse {
+  response: string;
+}
+
+export class ChatBackendError extends Error {
+  constructor(
+    message: string,
+    public readonly userMessage: string,
+    public readonly status?: number
+  ) {
+    super(message);
+    this.name = 'ChatBackendError';
+  }
 }
 
 export class AIService {
   private static instance: AIService;
   private conversationHistory: ChatMessage[] = [];
-  private apiKey = "AIzaSyAX2GDjNsefrcGvHUSncGZozX-rBvAGVBU";
-  private baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent';
 
   static getInstance(): AIService {
     if (!AIService.instance) {
@@ -41,27 +49,56 @@ export class AIService {
     return AIService.instance;
   }
 
-  private async callGeminiAPI(prompt: string): Promise<string> {
-    const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
-        }]
-      })
-    });
+  private async callBackendChat(message: string): Promise<string> {
+    const url = `${API_BASE_URL}/api/ai/chat`;
 
-    if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+    let response: Response;
+    try {
+      // Standard CORS request: only Content-Type (triggers preflight); no credentials/custom headers.
+      response = await fetch(url, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+    } catch (err) {
+      console.error('Network error calling AIRA backend:', url, err);
+      throw new ChatBackendError(
+        'Failed to reach AIRA server',
+        "I can't reach the server right now. Start the backend (uvicorn on port 8000) and restart the Vite dev server, then try again."
+      );
     }
 
-    const data: GeminiResponse = await response.json();
-    return data.candidates[0]?.content.parts[0]?.text || '';
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const errBody = await response.json();
+        detail = typeof errBody.detail === 'string' ? errBody.detail : detail;
+      } catch {
+        /* non-JSON error body */
+      }
+
+      const friendly =
+        response.status >= 500
+          ? 'Something went wrong on the server. Please try again in a moment.'
+          : "I couldn't process that message. Please try again.";
+
+      throw new ChatBackendError(
+        `Backend chat error: ${response.status} ${detail}`,
+        friendly,
+        response.status
+      );
+    }
+
+    const data: BackendChatResponse = await response.json();
+    const text = data.response?.trim();
+    if (!text) {
+      throw new ChatBackendError(
+        'Empty backend response',
+        'I received an empty response. Please try again.'
+      );
+    }
+    return text;
   }
 
   // Check if user is sending a greeting
@@ -191,42 +228,19 @@ export class AIService {
     return false;
   }
 
-  // Main conversation handler
+  // Main conversation handler — routes chat through the FastAPI backend
   async processMessage(text: string): Promise<{ response: string; moodAnalysis?: MoodAnalysis }> {
-    try {
-      const conversationContext = this.conversationHistory
-        .slice(-5)
-        .map(msg => `${msg.sender}: ${msg.text}`)
-        .join('\n');
-
-      // Check for greetings first
-      if (this.isGreeting(text)) {
-        const greetingResponse = this.generateGreetingResponse(text);
-        return { response: greetingResponse };
-      }
-
-      if (this.shouldAnalyzeMood(text)) {
-        // Provide mood analysis
-        const moodAnalysis = await this.analyzeMood(text);
-        return {
-          response: moodAnalysis.formattedResponse,
-          moodAnalysis
-        };
-      } else if (this.shouldProvidePracticalAssistance(text)) {
-        // Provide practical assistance (recipes, activities, etc.)
-        const response = await this.generatePracticalAssistance(text, conversationContext);
-        return { response };
-      } else {
-        // Provide general conversation
-        const response = await this.generateConversationalResponse(text, conversationContext);
-        return { response };
-      }
-    } catch (error) {
-      console.error('Error processing message:', error);
-      return {
-        response: "I'm having trouble understanding right now. Could you try rephrasing that?"
-      };
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return { response: 'Please enter a message.' };
     }
+
+    if (this.isGreeting(trimmed)) {
+      return { response: this.generateGreetingResponse(trimmed) };
+    }
+
+    const response = await this.callBackendChat(trimmed);
+    return { response };
   }
 
   // Generate greeting response
@@ -302,7 +316,7 @@ Don't analyze their mood unless they specifically ask. Just be a good conversati
 
 Respond naturally without any special formatting.`;
 
-    const response = await this.callGeminiAPI(prompt);
+    const response = await this.callBackendChat(text);
     return response.trim();
   }
 
@@ -366,7 +380,7 @@ Format your response clearly with:
 
 Keep responses comprehensive but not overwhelming. Focus on being genuinely helpful.`;
 
-    const response = await this.callGeminiAPI(prompt);
+    const response = await this.callBackendChat(text);
     return response.trim();
   }
 
@@ -452,9 +466,9 @@ IMPORTANT:
 
 Respond only with valid JSON.`;
 
-      const response = await this.callGeminiAPI(prompt);
+      const response = await this.callBackendChat(text);
       
-      // Extract JSON from response (in case Gemini adds extra text)
+      // Extract JSON from response (in case the model adds extra text)
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('Invalid response format from Gemini');
@@ -475,7 +489,7 @@ Respond only with valid JSON.`;
       };
 
     } catch (error) {
-      console.error('Gemini API error:', error);
+      console.error('Mood analysis error:', error);
       // Fallback to local analysis if API fails
       return this.fallbackMoodAnalysis(text);
     }
@@ -1097,7 +1111,9 @@ Generate a thoughtful, empathetic follow-up question that:
 
 Keep the question concise (1-2 sentences) and natural. Don't include quotes or formatting.`;
 
-      const response = await this.callGeminiAPI(prompt);
+      const response = await this.callBackendChat(
+        `Suggest one brief, empathetic follow-up question for someone feeling ${mood}.`
+      );
       return response.trim() || this.getDefaultFollowUpQuestion(mood);
 
     } catch (error) {

@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { aiService, type ChatMessage, type MoodAnalysis } from "@/services/ai-service";
+import { aiService, ChatBackendError, type ChatMessage, type MoodAnalysis } from "@/services/ai-service";
 import { historyService, type MoodEntry } from "@/services/history-service";
 import { Bot, Clock, ExternalLink, Heart, Lightbulb, MessageCircle, RefreshCw, Send, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -198,9 +198,11 @@ export function MoodChatbot({ onMoodChange }: MoodChatbotProps) {
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isTyping) return;
 
+    const messageText = inputValue.trim();
+
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
-      text: inputValue,
+      text: messageText,
       sender: 'user',
       timestamp: new Date(),
     };
@@ -211,7 +213,7 @@ export function MoodChatbot({ onMoodChange }: MoodChatbotProps) {
     setIsTyping(true);
 
     try {
-      const response = await aiService.processMessage(inputValue);
+      const response = await aiService.processMessage(messageText);
       
       const botMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -246,15 +248,19 @@ export function MoodChatbot({ onMoodChange }: MoodChatbotProps) {
           label: response.moodAnalysis.primaryMood,
           confidence: response.moodAnalysis.confidence || 0.8,
           timestamp: new Date(),
-          context: inputValue
+          context: messageText
         };
         historyService.saveMoodToStorage(moodEntry);
       }
     } catch (error) {
       console.error('Error processing message:', error);
+      const friendlyText =
+        error instanceof ChatBackendError
+          ? error.userMessage
+          : 'Something unexpected happened. Please try again.';
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
-        text: "I'm having trouble understanding right now. Could you try rephrasing that?",
+        text: friendlyText,
         sender: 'bot',
         timestamp: new Date(),
       };
@@ -450,7 +456,7 @@ export function MoodChatbot({ onMoodChange }: MoodChatbotProps) {
                   <div className="flex items-center gap-2">
                     <Bot className="w-4 h-4" />
                     <LoadingSpinner size="sm" />
-                    <span className="text-sm text-muted-foreground">Thinking...</span>
+                    <span className="text-sm text-muted-foreground">AIRA is typing...</span>
                   </div>
                 </div>
               </div>

@@ -81,5 +81,18 @@
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.0.1",
     "vite": "^5.4.1"
-  }
+  },
+  "description": "AIRA is an AI-powered mental wellness and productivity application designed to help users track their mood, manage tasks, set goals, and maintain overall mental well-being through intelligent features and personalized insights.",
+  "main": "eslint.config.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlenSony/AIRA.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AlenSony/AIRA/issues"
+  },
+  "homepage": "https://github.com/AlenSony/AIRA#readme"
 }
